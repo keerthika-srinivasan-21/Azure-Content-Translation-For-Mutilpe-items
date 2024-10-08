@@ -1,0 +1,1 @@
+# Azure-Content-Translation-For-Mutilpe-items
