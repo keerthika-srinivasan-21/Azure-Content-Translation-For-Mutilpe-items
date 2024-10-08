@@ -1,0 +1,318 @@
+# User Inputs-Dialogs
+
+$dialog = Read-Variable -Parameters `
+ @{ Name = "fromLanguage"; Title = "Source Language"; Source = "DataSource=/sitecore/system/languages"; Editor = "droplist"; Mandatory =$true},
+@{ Name = "toLanguage"; Title = "Target Language"; Source = "DataSource=/sitecore/system/languages"; Editor = "droplist"; Mandatory =$true },
+@{ Name = "siteRoot"; Title = "Item Type To Translate"; Source = "DataSource=/sitecore/content/"; Editor = "droptree"; Mandatory =$true },
+@{ Name = "SelectFolderRoot"; Title = "Root Folder For Translation"; Source = "DataSource=/sitecore/content/"; Editor = "droptree" ; Mandatory =$true} `
+  `
+ 	-Width 500 -Height 500 `
+ 	-Title "AI Translation Utility" `
+ 	-OkButtonName "Select" `
+ 	-CancelButtonName "Cancel"
+if ($dialog -ne "ok")
+{
+	exit
+}
+$fromLanguageCode = $fromLanguage["Regional Iso Code"]
+if ($fromLanguageCode -eq $null) {
+	$fromLanguageCode = $fromLanguage["Iso"]
+}
+if ($siteRoot -ne $null)
+{
+    $rootfieldstoGet=Get-Item $siteRoot.ID -Language $fromLanguageCode
+    $itemfields=$rootfieldstoGet.Fields | ? { $_.TypeKey -eq "Single-Line Text" -or "Multi-Line Text" } 
+	#$itemFields = $siteRoot.Fields | ? { $_.TypeKey -eq "single-line text" -or "multi-line text" } 
+	$fieldOptions = New-Object System.Collections.Specialized.OrderedDictionary
+	# Ignore System fields
+	$fieldOptions.Clear()
+	foreach ($field in $itemfields)
+	{
+
+		if ($field.Name -notlike "__*")
+		{
+			$fieldOptions.Add($field.Name,$field.Id)
+		}
+	}
+	# Window with options to select language and fields to translate
+	$dialogProps = @{
+		Parameters = @(
+			@{ Name = "fieldsSelection"; Value = "0"; Title = "Fields to translate"; Tooltip = "Which fields should be translated?"; Editor = "check"; options = $fieldOptions; Mandatory =$true }
+		)
+	
+		Title = "AI Translation Utility"
+		OkButtonName = "Continue"
+		CancelButtonName = "Cancel"
+		Width = 550
+		Height = 280
+		Icon = "office/32x32/globe.png"
+	}
+	# Wait for user input from options menu
+
+	$dialogResult = Read-Variable @dialogProps
+	if ($dialogResult -ne "ok")
+	{
+		# Exit if cancelled
+		exit
+	}
+}
+# End of User Inputs
+
+#Variable Declaration
+$Text = @()
+$SplittedArray=$null
+#End of Variable Declaration
+
+#Get Template Used to indentify type of template
+$fullPath = "master:" + $siteRoot.FullPath
+$currentItem = Get-Item -Path $fullPath -Language $fromLanguageCode
+
+if ($currentItem -ne $null) {
+	$templateItem = Get-ItemTemplate -Id $currentItem.Id -Database "master"
+	if ($templateItem -ne $null) {
+		$templateId = $templateItem.Id
+		#Build Faster Query to fecth all the childrens under the Root Folder For Translation
+		$queryBuilder = $SelectFolderRoot.FullPath + "//*" + "[@@templateid='$templateId']"
+		$listofItemBasedOnTemplate = Get-Item -Path master: -Query $queryBuilder -Language $fromLanguageCode
+
+		#Get List of Fields to be Translated
+		if ($listofItemBasedOnTemplate -ne $null -and $fieldsSelection -ne $null) {
+			foreach ($eachListItem in $listofItemBasedOnTemplate) {
+				foreach ($eachField in $fieldsSelection) {
+
+					$FieldValue = $eachListItem[$eachField]
+					$htmlToInject = "<div class='notranslate'>" + "itemid:" + $eachListItem.Id.ToString() + "fieldid:" + $eachField + "</div>"
+					$formattedFieldValue = $htmlToInject + $FieldValue
+					#The body of the request is a JSON array. Each array element is a JSON object with a string property named Text, which represents the string to translate.
+					# Refer the link https://learn.microsoft.com/en-us/azure/ai-services/translator/reference/v3-0-translate
+					$appendTexttoformattedFieldValue = @{ 'text' = $($formattedFieldValue.Trim()) }
+					$Text += $appendTexttoformattedFieldValue
+				}
+
+			}
+		}
+	}
+
+}
+
+try
+{
+#Azure AI Service Call
+# API Key from https://azure.microsoft.com/en-us/services/cognitive-services/translator-text-api/
+$apiKey = "52aca9342a714216a0ec7a7d35e44b15"
+# Translation API
+$translateBaseURI = "https://api.cognitive.microsofttranslator.com/translate?api-version=3.0"
+# Convert from - en = English
+$fromLang = $fromLanguageCode
+# Supported Languages https://docs.microsoft.com/en-us/azure/cognitive-services/translator/languages 
+# Convert to - de = German
+
+$toLang = $toLanguage["Regional Iso Code"]
+$toVersion=$toLanguage["Regional Iso Code"]
+
+# API Auth Headers
+$headers = @{}
+$headers.Add("Ocp-Apim-Subscription-Key",$apiKey)
+$headers.Add("Ocp-Apim-Subscription-Region","westeurope")
+$headers.Add("Content-Type","application/json;charset=utf-8")
+# Conversion URI
+
+
+$convertURI = "$($translateBaseURI)&from=$($fromLang)&to=$($toLang)"
+# Build Conversion Body
+
+$text = [regex]::Replace(($Text | ConvertTo-Json -Depth 4 -Compress),'\\u[0-9a-f]{4}',{ param($m) [regex]::Unescape($m) })
+$text = @{ 'Text' = $text }
+
+$text = [regex]::Replace(($text | ConvertTo-Json -Depth 4 -Compress),'\\u[0-9a-f]{4}',{ param($m) [regex]::Unescape($m) })
+
+Write-Host "Request": $text
+
+# Convert
+$conversionResult = Invoke-RestMethod -Method POST -Uri $convertURI -Headers $headers -UseBasicParsing -Body "[$($text)]"
+
+
+
+$response=$null
+
+#Formatting Response Object
+if($fromLanguageCode -ne "en"){
+ $testproblem=$conversionResult.translations[0].text
+$settings = [Newtonsoft.Json.JsonSerializerSettings]::new()
+$settings.ContractResolver = [Newtonsoft.Json.Serialization.CamelCasePropertyNamesContractResolver]::new()
+$jsonString = [Newtonsoft.Json.JsonConvert]::SerializeObject($testproblem, $settings)
+
+$response = [Newtonsoft.Json.JsonConvert]::DeSerializeObject($jsonString, $settings)
+Write-Host "Test Data:" $response
+
+	$response = $response -Split("},")
+	
+
+
+
+}
+else{
+    $response = $conversionResult.translations[0].text|ConvertTo-Json|ConvertFrom-Json
+	$response = $response -Split("},")  
+Write-Host "Response AZURE AI Service"
+Write-Host "________________________________"
+Write-Host $response
+
+}
+
+
+# response formatting
+class responsemodel{
+	[string]$ItemID
+	[string]$FieldID
+	[string]$FieldValue
+	ResponseModel ([string]$itemID,[string]$fieldID,[string]$fieldValue)
+	{
+		$this.ItemID = $itemID.Trim()
+		$this.FieldID = $fieldID.Trim()
+		$this.FieldValue = -join @( $fieldValue)
+	}
+}
+$responseArray = @()
+[responsemodel[]]$models = @()
+#	$random=[System.Text.Encoding]::UTF8.GetString([System.Text.Encoding]::UTF8.GetBytes($response))
+#$randomCharacters = $response -replace '[»]','"'
+if ($response -ne $null) {
+    
+
+
+
+	
+		foreach ($rawitem in $response) {
+		   
+			Write-Host "eachSplittedData:" $rawitem
+			$splittedItemIdreult = $null
+			$splittedfieldIdreult = $null
+			$itemidresult = $rawitem | Select-String -Pattern 'itemid:{\w{8}-\w{4}-\w{4}-\w{4}-\w{12}}' -AllMatches | Select-Object -ExpandProperty Matches | Select-Object -ExpandProperty Value
+			if($itemidresult -eq $null){
+			   # $itemidresult=$rawitem|Select-String -Pattern 'itemid.*(?=})' -AllMatches | Select-Object -ExpandProperty Matches | Select-Object -ExpandProperty Value
+			    $itemidresult=$rawitem|Select-String -Pattern 'itemid.+?:{\w{8}-\w{4}-\w{4}-\w{4}-\w{12}}' -AllMatches | Select-Object -ExpandProperty Matches | Select-Object -ExpandProperty Value
+			Write-Host $itemidresult
+			    
+			}
+			#to check if special characters
+			$specialCharacters = "[$@#%^*&<>!~`]"
+			if ($itemidresult -ne $null) {
+				$modifiedItemidString = $itemidresult -replace $specialCharacters,""
+				if ($modifiedItemidString -ne $null) {
+					$splittedItemIdreult = $modifiedItemidString.split("itemid:",[stringsplitoptions]::RemoveEmptyEntries).Trim()
+				}
+			}
+
+			$fieldidresult = $rawitem | Select-String -Pattern 'fieldid:{\w{8}-\w{4}-\w{4}-\w{4}-\w{12}}' -AllMatches | Select-Object -ExpandProperty Matches | Select-Object -ExpandProperty Value
+			if($fieldidresult -eq $null){
+			    $fieldidresult=$rawitem|Select-String -Pattern 'fieldid.+?:{\w{8}-\w{4}-\w{4}-\w{4}-\w{12}}' -AllMatches | Select-Object -ExpandProperty Matches | Select-Object -ExpandProperty Value
+			}
+			if ($fieldidresult -ne $null) {
+				$modifiedfieldidString = $fieldidresult -replace $specialCharacters,""
+				if ($modifiedfieldidString -ne $null) {
+					$splittedfieldIdreult = $modifiedfieldidString.split("fieldid:",[stringsplitoptions]::RemoveEmptyEntries).Trim()
+				}
+
+			}
+			
+
+			if ($rawitem -ne $null) {
+			    Write-Host $rawitem.Text
+			    $manuplatedModel=$null
+			    if($rawitem.Text -ne $null)
+			    {
+			        $manuplatedModel=$rawitem.Text
+			    }
+			    else{
+			        $manuplatedModel=$rawitem
+			    }
+			  
+			    
+			    
+				$fieldValue = $null
+		        $Value=$null
+		        	$Value = [regex]::Match($manuplatedModel,'(<?/div>)(.|\r|\n)*(?=)').Value
+			#	if($Value -eq $null){
+			#	 		$Value = [regex]::Match( $rawitem.نص,'(<?/div>)(.|\r|\n)*(?=)').Value
+			#	}
+			
+				Write-Host "Regex match Value For each ITem " $Value
+				#Write-Host $Value
+				$replaceValue = $Value -replace ("</div>")
+				$replaceValue=$replaceValue -replace("\\n")
+				$replaceValue=$replaceValue -replace("\\")
+				#$testingVale=[regex]::Match($replaceValue,'\\n').Value 
+			
+			
+			
+			  $lastValue=$replaceValue.LastIndexOf('"')
+			if($lastValue -gt 0){
+				$lastIndexOf = $replaceValue.remove($lastValue)
+				#	$lastIndexOf=$lastIndexOf -replace("\\n")
+				#	$lastIndexOf=$lastIndexOf-replace("\\")
+				
+				$fieldValue += $lastIndexOf
+				}
+				else{
+				    $fieldValue +=$replaceValue
+				}
+
+				Write-Host "Final Field Value" $fieldValue
+
+
+
+				[responsemodel[]]$models += @(
+					[responsemodel]::new($splittedItemIdreult,$splittedfieldIdreult,$fieldValue)
+
+				)
+			}
+
+
+		}
+
+	
+}
+$groupedObject = $models | Group-Object -Property ItemID
+
+foreach ($groupelement in $groupedObject)
+{
+	$resultItem = $null
+	if ($groupelement -ne $null -and $groupelement.Name -ne $null) {
+		$splitedElement = $groupelement.Name.split(" ")
+		foreach ($eachItemID in $splitedElement) {
+			if ($groupelement.Name -ne '')
+			{
+			    $getItemID=Get-Item -Path $groupelement.Name
+			    Write-Host $getItemID.ID
+				$resultItem = Add-ItemVersion -Id $groupelement.Name -Database "master" -Language $fromLanguageCode -TargetLanguage $toVersion -IfExist Append
+			}
+			if ($resultItem -ne $null) {
+				$expandElements = $groupelement | Select-Object -ExpandProperty Group
+				foreach($eachelements in $expandElements){
+				    if($resultItem -ne $null){
+				       
+				        if($eachelements.FieldID -ne ""){
+				             $resultItem.Editing.BeginEdit()
+				             	$resultItem[$eachelements.FieldID] = $eachelements.FieldValue
+
+					$resultItem.Editing.EndEdit()
+				        }
+				    }
+				}
+		
+			}
+		}
+	}
+}
+Write-Log "Translated Data saved to the item" -Log Info
+}
+Catch
+{
+    #Output Error details: Exception message
+    Write-Log "Error Occoured. Translation Failed.." -Log Info
+    Write-Log $_.Exception.Message -Log Error
+    Write-Host $_.Exception.Message 
+   
+    Write-Host "Error Occoured. Translation Failed."
+}
