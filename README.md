@@ -13,3 +13,8 @@ One of the Important key benefits is the AZURE AI Tranlate Service is It underst
 This does not requires any deployment or downtime.
 Its powershell module we can do our translation in quick round of time
 Assume that your planning to do multisite demo some client and do don't have time translate the content . we can use this powershell translate module to translate the content and host the site quickly we can show the demo for any number of sites
+Create a Azure Translator Service. Go through the link to create Azure Service.https://azure.microsoft.com/en-us/products/ai-services/ai-translator
+Obtain the key the azure key and also the region
+update it in the new sitecore module
+Next deploy the package and navigate to powershell console and rebuild the tools
+Now it is ready to work.
